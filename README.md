@@ -150,6 +150,8 @@ translation that echoes the source name).
 - **Replay bypasses your caches too.** If the app memoises model answers (a
   Redis cache keyed by input), skip it in record and replay, or a cached real
   answer short-circuits the call and nothing is recorded or replayed.
+- **Pick the env name once.** `parseReplayMode(process.env.LLM_REPLAY)` accepts
+  `off | record | replay` and rejects anything else.
 - **Record is write-only.** It always calls the API and overwrites. Wipe the
   fixture directory before a record run meant to produce a clean set; stale
   keys are never overwritten, only orphaned.
@@ -163,6 +165,77 @@ translation that echoes the source name).
   whole text; not for testing streaming UI.
 - **Fixtures are data, commit them.** JSON stays small; a set of PNGs is a few
   MB. The suite then runs with no key on every push.
+
+## Agent runs (whole turns, not single calls)
+
+An orchestrator that drives `claude -p` in a container, a coding-agent RPC or
+an in-process agent loop never sees individual API requests. It sees a
+**turn**: a prompt goes in; out come a final text, token usage, a
+success-or-failure outcome and the side effects the agent caused through the
+project's bridges (a document written, a task delegated, a command run in a
+sandbox). The second neutral family records exactly that.
+
+```ts
+import {
+  FixtureStore, agentRunOperation, hashStable, markVolatile,
+  recordAgentRun, replayAgentRun, recordedError, recordingProxy, applyEffects,
+  parseReplayMode, type AgentEffect, type ErrorCodec,
+} from 'llm-replay';
+
+const mode = parseReplayMode(process.env.LLM_REPLAY);           // off | record | replay
+const store = new FixtureStore('fixtures/runs', { recordHint: 'run once with LLM_REPLAY=record' });
+
+// How the project's failures cross the fixture boundary: by class and fields.
+const errors: ErrorCodec = {
+  encode: (e) => e instanceof RunError ? { name: 'RunError', message: e.message, data: { reason: e.reason } } : undefined,
+  decode: (s) => new RunError((s.data as { reason: string }).reason, s.message),
+};
+
+const runs = agentRunOperation({
+  dir: 'runs',
+  key: (req) => hashStable(req.agent, req.prompt),   // volatile spans excluded, prompt wording excluded
+  errors,
+  onDrift: (d) => { if (process.env.CI) throw new Error(`prompt drift for ${d.agent}`); console.warn(d); },
+});
+
+// record: wrap the bridges so every call lands in the journal, run the real agent
+const effects: AgentEffect[] = [];
+const sandbox = recordingProxy(realSandbox, 'sandbox', effects);
+const result = await recordAgentRun(
+  runs, req, store,
+  () => real.runAgent({ ...input, sandbox }),
+  (r) => ({ text: r.text, usage: r.usage, effects: [] }),
+  () => effects,
+);
+
+// replay: re-apply the journal through the real bridges, then answer or fail as recorded
+const rec = replayAgentRun(runs, req, store);
+await applyEffects(rec.effects, { sandbox: realSandbox });
+if (rec.outcome === 'error') throw recordedError(runs, rec);
+return { text: rec.text, usage: rec.usage };
+```
+
+What this family adds over `generate`:
+
+- **Failures are fixtures.** A truncated answer, an exhausted budget, a
+  rate-limited subscription are outcomes a pipeline must handle; they are
+  recorded through the project's `ErrorCodec` and replayed as the same class
+  with the same fields. A record is a plain JSON file, so a failure that a live
+  run will not produce on demand can be written by hand.
+- **Usage travels with the answer**, so cost accounting and spend ceilings
+  are tested on real numbers.
+- **Effects are data, bridges are real.** `recordingProxy` journals calls on
+  any bridge (object or bare function); `applyEffects` replays them through
+  the bridges the caller provides. The system decides what each call does —
+  the fixture only says that it was made.
+- **One file per run**, written atomically (`FixtureStore` now renames a temp
+  file into place), so parallel runs never clobber each other.
+- **Volatile spans.** Wrap ids, dates, paths and generated diffs in
+  `markVolatile(...)` where the prompt is assembled; `hashStable` keys the
+  prompt without them. The model sees HTML comments it ignores.
+- **Prompt drift.** The key may leave the system prompt out on purpose; the
+  record keeps a digest of model + system prompt, and a hit whose digest
+  changed calls `onDrift` (warn by default, throw in CI).
 
 ## Development
 
@@ -181,10 +254,7 @@ Consume from another project before publishing with a git dependency:
 
 ## Roadmap
 
-- Record and replay token usage, so cost accounting is testable.
 - Named cassettes per scenario with a manifest: orphan GC, diff of two
   recordings, an `auto` mode (replay on hit, record on miss) that is safe.
-- Prompt-drift report: a key hit whose prompt digest changed warns in dev and
-  fails in CI.
 - Fault injection on replay (timeout, 429, malformed JSON on the n-th call).
 - Streams with chunk boundaries. A second provider adapter.

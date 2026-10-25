@@ -112,3 +112,38 @@ export function binaryFileOperation<Req, Res>(o: BinaryFileOperationOptions<Req,
     },
   };
 }
+
+export interface JsonFileOperationOptions<Req, Res, Stored> {
+  readonly name: string;
+  /** Directory (relative to the store) holding `<key>.json` files. */
+  readonly dir: string;
+  key(req: Req): string;
+  /** The value to store, or `undefined` to skip. */
+  encode(res: Res, req: Req): Stored | undefined;
+  decode(stored: Stored, req: Req): Res;
+  onMiss?(req: Req): Res;
+}
+
+/**
+ * One JSON file per answer. Unlike `jsonMapOperation` there is no shared file
+ * to read-modify-write, so parallel recordings of different keys are safe.
+ */
+export function jsonFileOperation<Req, Res, Stored>(o: JsonFileOperationOptions<Req, Res, Stored>): Operation<Req, Res> {
+  const file = (req: Req): string => `${o.dir}/${o.key(req)}.json`;
+  const onMiss = o.onMiss;
+  return {
+    name: o.name,
+    describe: (req) => o.key(req),
+    ...(onMiss ? { onMiss: (req: Req) => onMiss(req) } : {}),
+    record(req, res, store) {
+      const value = o.encode(res, req);
+      if (value !== undefined) store.writeJson(file(req), value);
+    },
+    replay(req, store) {
+      const path = file(req);
+      if (!store.has(path)) return undefined;
+      const stored = store.readJson<{ value: Stored } | Stored | null>(path, null);
+      return stored === null ? undefined : o.decode(stored as Stored, req);
+    },
+  };
+}

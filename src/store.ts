@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 export interface FixtureStoreOptions {
@@ -6,10 +6,17 @@ export interface FixtureStoreOptions {
   readonly recordHint?: string;
 }
 
+let tmpCounter = 0;
+
 /**
  * A directory of fixtures. JSON maps hold many small answers per file; big or
  * binary answers (images, vectors) get one file each. Paths are relative to
  * `root`, so a project can point the store at a temp dir in its tests.
+ *
+ * Every write is atomic (temp file + rename), so a reader never sees a half
+ * written fixture and two writers of DIFFERENT files never interfere. Two
+ * writers of the SAME map file still race on read-modify-write — use one file
+ * per key (`jsonFileOperation`, `agentRunOperation`) where runs are parallel.
  */
 export class FixtureStore {
   readonly recordHint: string;
@@ -38,12 +45,10 @@ export class FixtureStore {
   }
 
   writeJson(relative: string, value: unknown): void {
-    const file = this.path(relative);
-    mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
+    this.writeAtomic(this.path(relative), `${JSON.stringify(value, null, 2)}\n`);
   }
 
-  /** Read-modify-write of one JSON file. */
+  /** Read-modify-write of one JSON file. Not safe against a concurrent writer of the same file. */
   updateJson<T>(relative: string, fallback: T, mutate: (value: T) => void): void {
     const value = this.readJson(relative, fallback);
     mutate(value);
@@ -55,8 +60,13 @@ export class FixtureStore {
   }
 
   writeBinary(relative: string, data: Buffer): void {
-    const file = this.path(relative);
+    this.writeAtomic(this.path(relative), data);
+  }
+
+  private writeAtomic(file: string, data: string | Buffer): void {
     mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, data);
+    const tmp = `${file}.${process.pid}.${++tmpCounter}.tmp`;
+    writeFileSync(tmp, data);
+    renameSync(tmp, file);
   }
 }
