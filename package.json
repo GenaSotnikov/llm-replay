@@ -1,6 +1,6 @@
 {
   "name": "llm-replay",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Record real LLM responses once, replay them for free: provider-neutral fixtures for e2e and integration tests",
   "license": "MIT",
   "type": "module",

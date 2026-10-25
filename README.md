@@ -249,7 +249,7 @@ npm run build        # dist/, also run by `prepare` when installed from git
 Consume from another project before publishing with a git dependency:
 
 ```json
-"llm-replay": "github:<owner>/llm-replay#v0.1.0"
+"llm-replay": "github:GenaSotnikov/llm-replay#v0.2.0"
 ```
 
 ## Roadmap
