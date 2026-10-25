@@ -193,7 +193,9 @@ export function errorRecord(
 /**
  * Run the real thing and record whatever comes out — the answer, or the
  * failure (encoded by the operation's codec and rethrown unchanged). `effects`
- * is read AFTER the run so a project can fill it as the run goes.
+ * is read AFTER the run so a project can fill it as the run goes; `ofError`
+ * tells what a failed run still produced (text streamed before a cut, usage
+ * the error carries), so a replayed failure looks like the live one.
  */
 export async function recordAgentRun<T>(
   op: AgentRunOperation,
@@ -202,7 +204,7 @@ export async function recordAgentRun<T>(
   run: () => Promise<T>,
   pick: (result: T) => AgentRunOutcome,
   effects: () => readonly AgentEffect[] = () => [],
-  usageOfError: (err: unknown) => AgentUsage | null = () => null,
+  ofError: (err: unknown) => Partial<AgentRunOutcome> = () => ({}),
 ): Promise<T> {
   let result: T;
   try {
@@ -210,7 +212,7 @@ export async function recordAgentRun<T>(
   } catch (err: unknown) {
     const encoded = op.errors.encode(err);
     if (encoded !== undefined) {
-      recordOperation(op, req, errorRecord(req, encoded, { effects: effects(), usage: usageOfError(err) }), store);
+      recordOperation(op, req, errorRecord(req, encoded, { ...ofError(err), effects: effects() }), store);
     }
     throw err;
   }
